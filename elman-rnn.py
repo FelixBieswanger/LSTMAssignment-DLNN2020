@@ -6,6 +6,7 @@ BSD License
 import numpy as np
 from random import uniform
 import sys
+from icecream import ic
 
 
 # Since numpy doesn't have a function for sigmoid
@@ -113,28 +114,30 @@ def forward(inputs, labels, memory, batch_size=1):
 
         # one-hot vector representation for character input at time t
         cs[t] = np.zeros((vocab_size, batch_size))
-
+        ic(cs[t].shape)
         for b in range(batch_size):
             cs[t][inputs[b][t]][b] = 1
 
         # transform the one hot vector to embedding
         # x = Wemb x c
         xs[t] = np.dot(Wex, cs[t])
-
+        ic(xs[t].shape)
         # computation for the hidden state of the network
         # H = tanh ( Wh . H + Wx . x )
         h_pre_activation = np.dot(Wxh, xs[t]) + np.dot(Whh, hs[t - 1]) + bh
         hs[t] = np.tanh(h_pre_activation)
-
+        ic(hs[t].shape)
         # output layer:
         # this is the unnormalized log probabilities for next chars (across all chars in the vocabulary)
+        ic(Why.shape)
         os[t] = np.dot(Why, hs[t]) + by
-
+        ic(os[t].shape)
         # softmax layer to get normalized probabilities:
         ps[t] = softmax(os[t])
-
+        ic(ps[t].shape)
         # the label is also an one-hot vector
         ys[t] = np.zeros((vocab_size, batch_size))
+        ic(ys[t].shape)
         for b in range(batch_size):
             ys[t][labels[b][t]][b] = 1
 

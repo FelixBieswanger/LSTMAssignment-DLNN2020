@@ -6,191 +6,329 @@ BSD License
 import numpy as np
 from random import uniform
 import sys
+from icecream import ic
+
+class dataset:
+
+    def __init__(self, data_path):
+
+        # data I/O
+        # should be simple plain text file. The sample from "Hamlet - Shakespeares" is provided in data/
+        with open(data_path, 'r') as f:
+            data = f.read()
+        chars = sorted(list(set(data)))  # added sorted so that the character list is deterministic
+        #print(chars)
+        self.data_size, self.vocab_size = len(data), len(chars)
+        #print('data has %d characters, %d unique.' % (self.data_size, self.vocab_size))
+        self.char_to_ix = {ch: i for i, ch in enumerate(chars)}
+        self.ix_to_char = {i: ch for i, ch in enumerate(chars)}
+
+        # this will load the data into memory
+        self.data_stream = np.asarray([self.char_to_ix[char] for char in data])
+        #print(self.data_stream.shape)
 
 
-def sigmoid(x):
-    return 1 / (1 + np.exp(-x))
+    def get_cut_stream(self,seq_length, batch_size):
+        bound = (self.data_stream.shape[0] // (seq_length * batch_size)) * (seq_length * batch_size)
+        cut_stream = self.data_stream[:bound]
+        cut_stream = np.reshape(cut_stream, (batch_size, -1))
+
+        return cut_stream
+
+    def get_ix_to_char(self):
+        return self.ix_to_char
+
+    def get_char_to_ix(self):
+        return self.char_to_ix
+
+    def get_data_and_vocab_size(self):
+        return self.data_size, self.vocab_size
+
+class lstm():
+
+    def __init__(self, emb_size,hidden_size,seq_length,learning_rate,max_updates,batch_size,std,vocab_size):
+        # hyperparameters
+        self.emb_size = emb_size
+        self.hidden_size = hidden_size  # size of hidden layer of neurons
+        self.seq_length = seq_length  # number of steps to unroll the RNN for
+        self.learning_rate = learning_rate
+        self.max_updates = max_updates
+        self.batch_size = batch_size
+        self.std = std
+        self.vocab_size = vocab_size
+
+        self.concat_size = self.emb_size + self.hidden_size
 
 
-def dsigmoid(y):
-    return y * (1 - y)
+        
+        # model parameters
+        # char embedding parameters
+        self.Wex = np.random.randn(self.emb_size, vocab_size) * self.std  # embedding layer
+
+        # LSTM parameters
+        self.Wf = np.random.randn(self.hidden_size, self.concat_size) * self.std  # forget gate
+        self.Wi = np.random.randn(self.hidden_size, self.concat_size) * self.std  # input gate
+        self.Wo = np.random.randn(self.hidden_size, self.concat_size) * self.std  # output gate
+        self.Wc = np.random.randn(self.hidden_size, self.concat_size) * self.std  # c term
+
+        self.bf = np.zeros((self.hidden_size, 1))  # forget bias
+        self.bi = np.zeros((self.hidden_size, 1))  # input bias
+        self.bo = np.zeros((self.hidden_size, 1))  # output bias
+        self.bc = np.zeros((self.hidden_size, 1))  # memory bias
+
+        # Output layer parameters
+        self.Why = np.random.randn(vocab_size, self.hidden_size) * self.std  # hidden to output
+        self.by = np.random.randn(vocab_size, 1) * self.std  # output bias
 
 
-def dtanh(x):
-    return 1 - x * x
+    def sigmoid(self,x):
+        return 1 / (1 + np.exp(-x))
 
 
-# The numerically stable softmax implementation
-def softmax(x):
-    # assuming x shape is [feature_size, batch_size]
-    e_x = np.exp(x - np.max(x, axis=0))
-    return e_x / e_x.sum(axis=0)
+    def dsigmoid(self,y):
+        return y * (1 - y)
 
 
-# data I/O
-data = open('data/input.txt', 'r').read()  # should be simple plain text file
-chars = sorted(list(set(data)))
-data_size, vocab_size = len(data), len(chars)
-print('data has %d characters, %d unique.' % (data_size, vocab_size))
-char_to_ix = {ch: i for i, ch in enumerate(chars)}
-ix_to_char = {i: ch for i, ch in enumerate(chars)}
-std = 0.1
+    def dtanh(self,x):
+        return 1 - x * x
 
-option = sys.argv[1]
+
+    # The numerically stable softmax implementation
+    def softmax(self,x):
+        # assuming x shape is [feature_size, batch_size]
+        e_x = np.exp(x - np.max(x, axis=0))
+        return e_x / e_x.sum(axis=0)
+
+    def forget_gate(self, zs):
+        #f = sigmoid(Wf * z + bf)
+        return self.sigmoid(np.dot(self.Wf,zs) + self.bf)
+
+    def input_gate(self, zs):
+        # i = sigmoid(Wi * z + bi)
+        return self.sigmoid(np.dot(self.Wi,zs) + self.bi)
+
+    def candidate_content(self, zs):
+        #c_ = tanh(Wc * z + bc)
+        return np.tanh(np.dot(self.Wc,zs) + self.bc)
+
+    def compute_cell_content(self, fs,c_t,ins, cc):
+        return np.dot(fs, c_t.T) + np.dot(ins,cc.T)
+
+    def output_gate(self,z):
+        #o = sigmoid(Wo * z + bo)
+        ic(self.Wo.shape)
+        ic(z.shape)
+        return self.sigmoid(np.dot(self.Wo,z) + self.bo)
+
+    def compute_cell_state(self, o, c_t):
+        return np.dot(np.tanh(c_t), o)
+
+    def forward(self,inputs, targets, memory):
+        """
+        inputs,targets are both list of integers.
+        hprev is Hx1 array of initial hidden state
+        returns the loss, gradients on model parameters, and last hidden state
+        """
+        # xs: inputs
+        # wes: Word embeddings at timestamp
+        # zs: concatenated input and h
+        # fs: forget_states
+        # ins: input gate state at timestamp
+        # cc: candidate content
+        # c_t: cell content 
+        # o: output gate
+        # ps: softmax output
+        # ls: label as one hot vector
+
+        hprev, cprev = memory
+        xs, wes, zs,fs, ins, cc, c_t, o, hs, ps, ls = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+        #hs, ys, ps, cs, zs,  c_s, ls =  , {}
+
+        hs[-1] = np.copy(hprev)
+        c_t[-1] = np.copy(cprev)
+
+        loss = 0
+        input_length = inputs.shape[0]
+
+        # forward pass
+        for t in range(input_length):
+            xs[t] = np.zeros((self.vocab_size, self.batch_size))  # encode in 1-of-k representation
+            for b in range(self.batch_size):
+                xs[t][inputs[t][b]][b] = 1
+            
+            ic(xs[t].shape)
+            # convert word indices to word embeddings
+            wes[t] = np.dot(self.Wex, xs[t])
+            ic(wes[t].shape)
+            ic(hs[t-1].shape)
+            # LSTM cell operation
+            # first concatenate the input and h to get z
+            zs[t] = np.row_stack((hs[t - 1], wes[t]))
+            ic(zs[t].shape)
+            # compute the forget gate
+            # f = sigmoid(Wf * z + bf)
+            fs[t] = self.forget_gate(zs[t])
+            ic(fs[t].shape)
+            # compute the input gate
+            # i = sigmoid(Wi * z + bi)
+            ins[t] = self.input_gate(zs[t])
+            ic(ins[t].shape)
+            # compute the candidate memory
+            #c_ = tanh(Wc * z + bc)
+            cc[t] = self.candidate_content(zs[t])
+            ic(cc[t].shape)
+            # new memory: applying forget gate on the previous memory
+            # and then adding the input gate on the candidate memory
+            # c_t = f * c_(t-1) + i * c_
+            c_t[t] = self.compute_cell_content(fs[t],c_t[t-1],ins[t], cc[t])
+            ic(c_t[t].shape)
+            # output gate
+            #o = sigmoid(Wo * z + bo)
+            o[t] = self.output_gate(zs[t])
+            ic(o[t].shape)
+            #cell state
+            hs[t] = self.compute_cell_state(o[t], c_t[t])
+            ic(hs[t].shape)
+            # DONE LSTM
+            # output layer - softmax and cross-entropy loss
+            # unnormalized log probabilities for next chars
+            # softmax for probabilities for next chars
+            ps[t] = self.softmax(hs[t])
+            ic(ps[t].shape)
+            # label (also one hot vector)
+            ls[t] = np.zeros((self.vocab_size, self.batch_size))
+            for b in range(self.batch_size):
+                ls[t][targets[t][b]][b] = 1
+            ic(ls[t].shape)
+            # cross-entropy loss
+            loss_t = np.sum(-np.log(ps[t]) * ls[t])
+            loss += loss_t
+            # loss += -np.log(ps[t][targets[t],0])
+
+        activations = (xs, wes, zs,fs, ins, cc, c_t, o, hs, ps, ls)
+        memory = (hs[input_length - 1], c_t[input_length -1])
+
+        return loss, activations, memory
+
+    def backward(self,activations, clipping=True):
+        xs, wes, hs, ys, ps, cs, zs, ins, c_s, ls, os, fs = activations
+
+        # backward pass: compute gradients going backwards
+        # Here we allocate memory for the gradients
+        dWex, dWhy = np.zeros_like(Wex), np.zeros_like(Why)
+        dby = np.zeros_like(by)
+        dWf, dWi, dWc, dWo = np.zeros_like(Wf), np.zeros_like(Wi), np.zeros_like(Wc), np.zeros_like(Wo)
+        dbf, dbi, dbc, dbo = np.zeros_like(bf), np.zeros_like(bi), np.zeros_like(bc), np.zeros_like(bo)
+
+        dhnext = np.zeros_like(hs[0])
+        dcnext = np.zeros_like(cs[0])
+
+        input_length = len(xs)
+
+        # back propagation through time starts here
+        for t in reversed(range(input_length)):
+            # computing the gradients here
+            pass
+        # clip to mitigate exploding gradients
+        if clipping:
+            for dparam in [dWex, dWf, dWi, dWo, dWc, dbf, dbi, dbo, dbc, dWhy, dby]:
+                np.clip(dparam, -5, 5, out=dparam)
+
+        gradients = (dWex, dWf, dWi, dWo, dWc, dbf, dbi, dbo, dbc, dWhy, dby)
+
+        return gradients
+
+
+    def sample(self,memory, seed_ix, n):
+        """
+        sample a sequence of integers from the model
+        h is memory state, seed_ix is seed letter for first time step
+        """
+        h, c = memory
+        x = np.zeros((self.vocab_size, 1))
+        x[seed_ix] = 1
+        ixes = []
+        for t in range(n):
+
+            # forward pass again, but we do not have to store the activations now
+            p = self.softmax(h)
+            #p = np.exp(y) / np.sum(np.exp(y))
+            ic(vocab_size)
+            ic(p.shape)
+            ix = np.random.choice(range(self.vocab_size), p=p.ravel())
+
+            index = ix
+            x = np.zeros((self.vocab_size, 1))
+            x[index] = 1
+            ixes.append(index)
+        return ixes
+
+
+
+
 
 # hyperparameters
 emb_size = 16
 hidden_size = 256  # size of hidden layer of neurons
 seq_length = 128  # number of steps to unroll the RNN for
 learning_rate = 5e-2
-max_updates = 500000
+#max_updates = 500000
+max_updates = 100
 batch_size = 32
-
-concat_size = emb_size + hidden_size
-
-# model parameters
-# char embedding parameters
-Wex = np.random.randn(emb_size, vocab_size) * std  # embedding layer
-
-# LSTM parameters
-Wf = np.random.randn(hidden_size, concat_size) * std  # forget gate
-Wi = np.random.randn(hidden_size, concat_size) * std  # input gate
-Wo = np.random.randn(hidden_size, concat_size) * std  # output gate
-Wc = np.random.randn(hidden_size, concat_size) * std  # c term
-
-bf = np.zeros((hidden_size, 1))  # forget bias
-bi = np.zeros((hidden_size, 1))  # input bias
-bo = np.zeros((hidden_size, 1))  # output bias
-bc = np.zeros((hidden_size, 1))  # memory bias
-
-# Output layer parameters
-Why = np.random.randn(vocab_size, hidden_size) * std  # hidden to output
-by = np.random.randn(vocab_size, 1) * std  # output bias
-
-data_stream = np.asarray([char_to_ix[char] for char in data])
-print(data_stream.shape)
-
-bound = (data_stream.shape[0] // (seq_length * batch_size)) * (seq_length * batch_size)
-cut_stream = data_stream[:bound]
-cut_stream = np.reshape(cut_stream, (batch_size, -1))
+std = 0.1
 
 
-def forward(inputs, targets, memory):
-    """
-    inputs,targets are both list of integers.
-    hprev is Hx1 array of initial hidden state
-    returns the loss, gradients on model parameters, and last hidden state
-    """
-    hprev, cprev = memory
-    xs, wes, hs, ys, ps, cs, zs, ins, c_s, ls = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
-    os, fs = {}, {}
-    hs[-1] = np.copy(hprev)
-    cs[-1] = np.copy(cprev)
 
-    loss = 0
-    input_length = inputs.shape[0]
+option = sys.argv[1]
+data = dataset("data/input.txt")
+data_size, vocab_size = data.get_data_and_vocab_size()
+char_to_ix = data.get_char_to_ix()
+ix_to_char = data.get_ix_to_char()
+cut_stream = data.get_cut_stream(seq_length, batch_size)
 
-    # forward pass
-    for t in range(input_length):
-        xs[t] = np.zeros((vocab_size, batch_size))  # encode in 1-of-k representation
-        for b in range(batch_size):
-            xs[t][inputs[t][b]][b] = 1
-
-        # convert word indices to word embeddings
-        wes[t] = np.dot(Wex, xs[t])
-
-        # LSTM cell operation
-        # first concatenate the input and h to get z
-        zs[t] = np.row_stack((hs[t - 1], wes[t]))
-
-        # compute the forget gate
-        # f = sigmoid(Wf * z + bf)
-
-        # compute the input gate
-        # i = sigmoid(Wi * z + bi)
-        # compute the candidate memory
-        # c_ = tanh(Wc * z + bc)
-
-        # new memory: applying forget gate on the previous memory
-        # and then adding the input gate on the candidate memory
-        # c_t = f * c_(t-1) + i * c_
-
-        # output gate
-        #o = sigmoid(Wo * z + bo)
-
-        # DONE LSTM
-        # output layer - softmax and cross-entropy loss
-        # unnormalized log probabilities for next chars
-        # softmax for probabilities for next chars
+model = lstm(emb_size,hidden_size,seq_length,learning_rate,max_updates,batch_size,std,vocab_size)
 
 
-        # label
-        ls[t] = np.zeros((vocab_size, batch_size))
-        for b in range(batch_size):
-            ls[t][targets[t][b]][b] = 1
+if option == 'test':
+    n, p = 0, 0
+    n_updates = 0
 
-        # cross-entropy loss
-        loss_t = np.sum(-np.log(ps[t]) * ls[t])
-        loss += loss_t
-        # loss += -np.log(ps[t][targets[t],0])
+    # momentum variables for Adagrad
+    mWex, mWhy = np.zeros_like(model.Wex), np.zeros_like(model.Why)
+    mby = np.zeros_like(model.by)
 
-    # activations = ()
-    memory = (hs[input_length - 1], cs[input_length -1])
+    mWf, mWi, mWo, mWc = np.zeros_like(model.Wf), np.zeros_like(model.Wi), np.zeros_like(model.Wo), np.zeros_like(model.Wc)
+    mbf, mbi, mbo, mbc = np.zeros_like(model.bf), np.zeros_like(model.bi), np.zeros_like(model.bo), np.zeros_like(model.bc)
 
-    return loss, activations, memory
+    smooth_loss = -np.log(1.0 / vocab_size) * seq_length  # loss at iteration 0
 
+    data_length = cut_stream.shape[1]
 
-def backward(activations, clipping=True):
-    xs, wes, hs, ys, ps, cs, zs, ins, c_s, ls, os, fs = activations
+    while True:
+        # prepare inputs (we're sweeping from left to right in steps seq_length long)
+        if p + seq_length + 1 >= data_length or n == 0:
+            hprev = np.zeros((hidden_size, batch_size))  # reset RNN memory
+            cprev = np.zeros((hidden_size, batch_size))
+            p = 0  # go from start of data
 
-    # backward pass: compute gradients going backwards
-    # Here we allocate memory for the gradients
-    dWex, dWhy = np.zeros_like(Wex), np.zeros_like(Why)
-    dby = np.zeros_like(by)
-    dWf, dWi, dWc, dWo = np.zeros_like(Wf), np.zeros_like(Wi), np.zeros_like(Wc), np.zeros_like(Wo)
-    dbf, dbi, dbc, dbo = np.zeros_like(bf), np.zeros_like(bi), np.zeros_like(bc), np.zeros_like(bo)
+        inputs = cut_stream[:, p:p + seq_length].T
+        targets = cut_stream[:, p + 1:p + 1 + seq_length].T
 
-    dhnext = np.zeros_like(hs[0])
-    dcnext = np.zeros_like(cs[0])
+        # sample from the model now and then
+        if n % 200 == 1:
+            h_zero = np.zeros((hidden_size, 1))  # reset RNN memory
+            c_zero = np.zeros((hidden_size, 1))
+            sample_ix = model.sample((h_zero, c_zero), inputs[0][0], 2000)
+            txt = ''.join(ix_to_char[ix] for ix in sample_ix)
+            print('----\n %s \n----' % (txt,))
 
-    input_length = len(xs)
-
-    # back propagation through time starts here
-    for t in reversed(range(input_length)):
-        # computing the gradients here
-
-    # clip to mitigate exploding gradients
-    if clipping:
-        for dparam in [dWex, dWf, dWi, dWo, dWc, dbf, dbi, dbo, dbc, dWhy, dby]:
-            np.clip(dparam, -5, 5, out=dparam)
-
-    gradients = (dWex, dWf, dWi, dWo, dWc, dbf, dbi, dbo, dbc, dWhy, dby)
-
-    return gradients
-
-
-def sample(memory, seed_ix, n):
-    """
-  sample a sequence of integers from the model
-  h is memory state, seed_ix is seed letter for first time step
-  """
-    h, c = memory
-    x = np.zeros((vocab_size, 1))
-    x[seed_ix] = 1
-    ixes = []
-    for t in range(n):
-
-        # forward pass again, but we do not have to store the activations now
-
-        p = np.exp(y) / np.sum(np.exp(y))
-        ix = np.random.choice(range(vocab_size), p=p.ravel())
-
-        index = ix
-        x = np.zeros((vocab_size, 1))
-        x[index] = 1
-        ixes.append(index)
-    return ixes
-
+        # forward seq_length characters through the net and fetch gradient
+        loss, activations, memory = model.forward(inputs, targets, (hprev, cprev))
+        ic(activations[7].shape)
+        hprev, cprev = memory
+        n_updates += 1
+        if n_updates >= max_updates:
+            break
 
 if option == 'train':
 
@@ -198,11 +336,11 @@ if option == 'train':
     n_updates = 0
 
     # momentum variables for Adagrad
-    mWex, mWhy = np.zeros_like(Wex), np.zeros_like(Why)
-    mby = np.zeros_like(by)
+    mWex, mWhy = np.zeros_like(model.Wex), np.zeros_like(model.Why)
+    mby = np.zeros_like(model.by)
 
-    mWf, mWi, mWo, mWc = np.zeros_like(Wf), np.zeros_like(Wi), np.zeros_like(Wo), np.zeros_like(Wc)
-    mbf, mbi, mbo, mbc = np.zeros_like(bf), np.zeros_like(bi), np.zeros_like(bo), np.zeros_like(bc)
+    mWf, mWi, mWo, mWc = np.zeros_like(model.Wf), np.zeros_like(model.Wi), np.zeros_like(model.Wo), np.zeros_like(model.Wc)
+    mbf, mbi, mbo, mbc = np.zeros_like(model.bf), np.zeros_like(model.bi), np.zeros_like(model.bo), np.zeros_like(model.bc)
 
     smooth_loss = -np.log(1.0 / vocab_size) * seq_length  # loss at iteration 0
 
@@ -222,14 +360,14 @@ if option == 'train':
         if n % 200 == 0:
             h_zero = np.zeros((hidden_size, 1))  # reset RNN memory
             c_zero = np.zeros((hidden_size, 1))
-            sample_ix = sample((h_zero, c_zero), inputs[0][0], 2000)
+            sample_ix = model.sample((h_zero, c_zero), inputs[0][0], 2000)
             txt = ''.join(ix_to_char[ix] for ix in sample_ix)
             print('----\n %s \n----' % (txt,))
 
         # forward seq_length characters through the net and fetch gradient
-        loss, activations, memory = forward(inputs, targets, (hprev, cprev))
+        loss, activations, memory = model.forward(inputs, targets, (hprev, cprev))
         hprev, cprev = memory
-        gradients = backward(activations)
+        gradients = model.backward(activations)
 
         dWex, dWf, dWi, dWo, dWc, dbf, dbi, dbo, dbc, dWhy, dby = gradients
         smooth_loss = smooth_loss * 0.999 + loss/batch_size * 0.001
@@ -237,7 +375,7 @@ if option == 'train':
             print('iter %d, loss: %f' % (n, smooth_loss))  # print progress
 
         # perform parameter update with Adagrad
-        for param, dparam, mem in zip([Wf, Wi, Wo, Wc, bf, bi, bo, bc, Wex, Why, by],
+        for param, dparam, mem in zip([model.Wf, model.Wi, model.Wo, model.Wc, model.bf, model.bi, model.bo, model.bc, model.Wex, model.Why, model.by],
                                       [dWf, dWi, dWo, dWc, dbf, dbi, dbo, dbc, dWex, dWhy, dby],
                                       [mWf, mWi, mWo, mWc, mbf, mbi, mbo, mbc, mWex, mWhy, mby]):
             mem += dparam * dparam
