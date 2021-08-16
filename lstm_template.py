@@ -112,18 +112,18 @@ class lstm():
         return np.tanh(np.dot(self.Wc,zs) + self.bc)
 
     def compute_cell_content(self, fs,c_t,ins, cc):
-        return np.dot(fs, c_t.T) + np.dot(ins,cc.T)
+        #ic("compute cell content", fs.shape, c_t.shape, ins.shape, cc.shape)
+        return fs * c_t + ins * cc
 
     def output_gate(self,z):
         #o = sigmoid(Wo * z + bo)
-        ic(self.Wo.shape)
-        ic(z.shape)
         return self.sigmoid(np.dot(self.Wo,z) + self.bo)
 
     def compute_cell_state(self, o, c_t):
-        return np.dot(np.tanh(c_t), o)
+        #ic("compute cell state", o.shape, c_t.shape)
+        return o * np.tanh(c_t)
 
-    def forward(self,inputs, targets, memory):
+    def forward(self,func_inputs, targets, memory):
         """
         inputs,targets are both list of integers.
         hprev is Hx1 array of initial hidden state
@@ -137,88 +137,117 @@ class lstm():
         # cc: candidate content
         # c_t: cell content 
         # o: output gate
+        # hs: cell state
+        # outputs
         # ps: softmax output
         # ls: label as one hot vector
 
         hprev, cprev = memory
-        xs, wes, zs,fs, ins, cc, c_t, o, hs, ps, ls = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+        #xs, wes, zs,fs, ins, cc, c_t, o, hs, ps, ls = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+        inputs, embeddings, input_and_h_concatenateds, forget_states, input_gate_states = {}, {}, {}, {}
+        candidate_contents, cell_contents, output_gate_values, h_cell_state, outputs = {}, {}, {}, {}, {}, {}
+        softmax_outputs, labels = {}, {}
         #hs, ys, ps, cs, zs,  c_s, ls =  , {}
 
-        hs[-1] = np.copy(hprev)
-        c_t[-1] = np.copy(cprev)
+        #hs[-1] = np.copy(hprev)
+        #c_t[-1] = np.copy(cprev)
+        h_cell_state[-1] = np.copy(hprev)
+        cell_contents[-1] = np.copy(cprev)
+
+
 
         loss = 0
-        input_length = inputs.shape[0]
+        input_length = func_inputs.shape[0]
 
         # forward pass
         for t in range(input_length):
-            xs[t] = np.zeros((self.vocab_size, self.batch_size))  # encode in 1-of-k representation
+            #xs[t] = np.zeros((self.vocab_size, self.batch_size))  
+            inputs[t] = np.zeros((self.vocab_size, self.batch_size))# encode in 1-of-k representation
             for b in range(self.batch_size):
-                xs[t][inputs[t][b]][b] = 1
+                inputs[t][func_inputs[t][b]][b] = 1
             
-            ic(xs[t].shape)
+            #ic(xs[t].shape)
             # convert word indices to word embeddings
-            wes[t] = np.dot(self.Wex, xs[t])
-            ic(wes[t].shape)
-            ic(hs[t-1].shape)
+            #wes[t] = np.dot(self.Wex, xs[t])
+            embeddings[t] = np.dot(self.Wex, inputs[t])
+            #ic(wes[t].shape)
+            #ic(hs[t-1].shape)
             # LSTM cell operation
             # first concatenate the input and h to get z
-            zs[t] = np.row_stack((hs[t - 1], wes[t]))
-            ic(zs[t].shape)
+            #zs[t] = np.row_stack((hs[t - 1], wes[t]))
+            input_and_h_concatenateds[t] = np.row_stack((h_cell_state[t - 1], embeddings[t]))
+            #ic(zs[t].shape)
             # compute the forget gate
             # f = sigmoid(Wf * z + bf)
-            fs[t] = self.forget_gate(zs[t])
-            ic(fs[t].shape)
+            #fs[t] = self.forget_gate(zs[t])
+            forget_states[t] = self.forget_gate(input_and_h_concatenateds[t])
+            #ic(fs[t].shape)
             # compute the input gate
             # i = sigmoid(Wi * z + bi)
-            ins[t] = self.input_gate(zs[t])
-            ic(ins[t].shape)
+            #ins[t] = self.input_gate(zs[t])
+            input_gate_states[t] = self.input_gate(input_and_h_concatenateds[t])
+            #ic(ins[t].shape)
             # compute the candidate memory
             #c_ = tanh(Wc * z + bc)
-            cc[t] = self.candidate_content(zs[t])
-            ic(cc[t].shape)
+            #cc[t] = self.candidate_content(zs[t])
+            candidate_contents[t] = self.candidate_content(input_and_h_concatenateds[t])
+            #ic(cc[t].shape)
             # new memory: applying forget gate on the previous memory
             # and then adding the input gate on the candidate memory
             # c_t = f * c_(t-1) + i * c_
-            c_t[t] = self.compute_cell_content(fs[t],c_t[t-1],ins[t], cc[t])
-            ic(c_t[t].shape)
+            #c_t[t] = self.compute_cell_content(fs[t],c_t[t-1],ins[t], cc[t])
+            cell_contents[t] = self.compute_cell_content(forget_states[t],cell_contents[t-1],input_gate_states[t], candidate_contents[t])
+            #ic(c_t[t].shape)
             # output gate
             #o = sigmoid(Wo * z + bo)
-            o[t] = self.output_gate(zs[t])
-            ic(o[t].shape)
+            #o[t] = self.output_gate(zs[t])
+            output_gate_values[t] = self.output_gate(input_and_h_concatenateds[t])
+            #ic(o[t].shape)
             #cell state
-            hs[t] = self.compute_cell_state(o[t], c_t[t])
-            ic(hs[t].shape)
+            #hs[t] = self.compute_cell_state(o[t], c_t[t])
+            h_cell_state = self.compute_cell_state(output_gate_values[t], cell_contents[t])
+            #ic(hs[t].shape)
             # DONE LSTM
             # output layer - softmax and cross-entropy loss
+            #output = np.dot(self.Why,hs[t]) + self.by
+            outputs[t] = np.dot(self.Why,h_cell_state[t]) + self.by
+
             # unnormalized log probabilities for next chars
             # softmax for probabilities for next chars
-            ps[t] = self.softmax(hs[t])
-            ic(ps[t].shape)
+            #ps[t] = self.softmax(output)
+            softmax_outputs[t] = self.softmax(outputs[t])
+            #ic(ps[t].shape)
             # label (also one hot vector)
-            ls[t] = np.zeros((self.vocab_size, self.batch_size))
+            #ls[t] = np.zeros((self.vocab_size, self.batch_size))
+            labels[t] = np.zeros((self.vocab_size, self.batch_size))
             for b in range(self.batch_size):
-                ls[t][targets[t][b]][b] = 1
-            ic(ls[t].shape)
+                #ls[t][targets[t][b]][b] = 1
+                labels[t][targets[t][b]][b] = 1
+            #ic(ls[t].shape)
             # cross-entropy loss
-            loss_t = np.sum(-np.log(ps[t]) * ls[t])
+            #ic("loss Calculation", ps[t].shape, ls[t].shape)
+            #loss_t = np.sum(- np.log(ps[t])  * ls[t])
+            loss_t = np.sum(- np.log(softmax_outputs[t])  * labels[t])
             loss += loss_t
             # loss += -np.log(ps[t][targets[t],0])
 
-        activations = (xs, wes, zs,fs, ins, cc, c_t, o, hs, ps, ls)
-        memory = (hs[input_length - 1], c_t[input_length -1])
+        #activations = (xs, wes, zs,fs, ins, cc, c_t, o, hs, ps, ls)
+        activations = (inputs, embeddings, input_and_h_concatenateds, forget_states, input_gate_states, candidate_contents, cell_contents, output_gate_values, h_cell_state, outputs, softmax_outputs, labels)
 
+        #memory = (hs[input_length - 1], c_t[input_length -1])
+        memory = (h_cell_state[input_length - 1], cell_contents[input_length -1])
         return loss, activations, memory
 
     def backward(self,activations, clipping=True):
         xs, wes, hs, ys, ps, cs, zs, ins, c_s, ls, os, fs = activations
+        inputs, embeddings, input_and_h_concatenateds, forget_states, input_gate_states, candidate_contents, cell_contents, output_gate_values, h_cell_state, outputs, softmax_outputs, labels = activations
 
         # backward pass: compute gradients going backwards
         # Here we allocate memory for the gradients
-        dWex, dWhy = np.zeros_like(Wex), np.zeros_like(Why)
-        dby = np.zeros_like(by)
-        dWf, dWi, dWc, dWo = np.zeros_like(Wf), np.zeros_like(Wi), np.zeros_like(Wc), np.zeros_like(Wo)
-        dbf, dbi, dbc, dbo = np.zeros_like(bf), np.zeros_like(bi), np.zeros_like(bc), np.zeros_like(bo)
+        dWex, dWhy = np.zeros_like(self.Wex), np.zeros_like(self.Why)
+        dby = np.zeros_like(self.by)
+        dWf, dWi, dWc, dWo = np.zeros_like(self.Wf), np.zeros_like(self.Wi), np.zeros_like(self.Wc), np.zeros_like(self.Wo)
+        dbf, dbi, dbc, dbo = np.zeros_like(self.bf), np.zeros_like(self.bi), np.zeros_like(self.bc), np.zeros_like(self.bo)
 
         dhnext = np.zeros_like(hs[0])
         dcnext = np.zeros_like(cs[0])
@@ -324,7 +353,7 @@ if option == 'test':
 
         # forward seq_length characters through the net and fetch gradient
         loss, activations, memory = model.forward(inputs, targets, (hprev, cprev))
-        ic(activations[7].shape)
+        #ic(len(activations[7]))
         hprev, cprev = memory
         n_updates += 1
         if n_updates >= max_updates:
