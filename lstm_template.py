@@ -43,7 +43,7 @@ emb_size = 16
 hidden_size = 256  # size of hidden layer of neurons
 seq_length = 128  # number of steps to unroll the RNN for
 learning_rate = 5e-2
-max_updates = 500000
+max_updates = 1
 batch_size = 32
 
 concat_size = emb_size + hidden_size
@@ -82,7 +82,22 @@ def forward(inputs, targets, memory):
     returns the loss, gradients on model parameters, and last hidden state
     """
     hprev, cprev = memory
-    xs, wes, hs, ys, ps, cs, zs, ins, c_s, ls = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+
+    # xs: inputs
+    # wes: Word embeddings at timestamp
+    # zs: concatenated input and h
+    # fs: forget_states
+    # ins: input gate state at timestamp
+    # cs: cell state
+    # c_t: candidate content at timestamp
+    # o: output gate
+    # hs: hidden
+    # outputs
+    # ps: softmax output
+    # ls: label as one hot vector
+
+
+    xs, wes, hs, ys, ps, cs, zs, ins, c_t, ls = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
     os, fs = {}, {}
     hs[-1] = np.copy(hprev)
     cs[-1] = np.copy(cprev)
@@ -105,23 +120,34 @@ def forward(inputs, targets, memory):
 
         # compute the forget gate
         # f = sigmoid(Wf * z + bf)
+        fs[t] = sigmoid(Wf.dot(zs[t])+bf)
 
         # compute the input gate
         # i = sigmoid(Wi * z + bi)
+        ins[t] = sigmoid(Wi.dot(zs[t])+bi)
+
         # compute the candidate memory
         # c_ = tanh(Wc * z + bc)
+        c_t[t] = np.tanh(Wc.dot(zs[t])+bc)
+
 
         # new memory: applying forget gate on the previous memory
         # and then adding the input gate on the candidate memory
         # c_t = f * c_(t-1) + i * c_
+        cs[t] = fs[t] * cs[t-1] + ins[t] * c_t[t]
 
         # output gate
         #o = sigmoid(Wo * z + bo)
+        os[t] = sigmoid(Wo.dot(zs[t]) +bo)
+
+        #new hidden state
+        hs[t] = os[t] * np.tanh(cs[t])
 
         # DONE LSTM
         # output layer - softmax and cross-entropy loss
         # unnormalized log probabilities for next chars
         # softmax for probabilities for next chars
+        ps[t] = softmax(Why.dot(hs[t])+by)
 
 
         # label
@@ -132,9 +158,9 @@ def forward(inputs, targets, memory):
         # cross-entropy loss
         loss_t = np.sum(-np.log(ps[t]) * ls[t])
         loss += loss_t
-        # loss += -np.log(ps[t][targets[t],0])
+        #loss += -np.log(ps[t][targets[t],0])
 
-    # activations = ()
+    activations = (xs, wes, zs,fs, ins, cs, c_t, os, hs, ps, ls)
     memory = (hs[input_length - 1], cs[input_length -1])
 
     return loss, activations, memory
@@ -158,6 +184,7 @@ def backward(activations, clipping=True):
     # back propagation through time starts here
     for t in reversed(range(input_length)):
         # computing the gradients here
+        pass
 
     # clip to mitigate exploding gradients
     if clipping:
@@ -171,9 +198,10 @@ def backward(activations, clipping=True):
 
 def sample(memory, seed_ix, n):
     """
-  sample a sequence of integers from the model
-  h is memory state, seed_ix is seed letter for first time step
-  """
+    sample a sequence of integers from the model
+    h is memory state, seed_ix is seed letter for first time step
+    """
+
     h, c = memory
     x = np.zeros((vocab_size, 1))
     x[seed_ix] = 1
@@ -184,7 +212,6 @@ def sample(memory, seed_ix, n):
 
         p = np.exp(y) / np.sum(np.exp(y))
         ix = np.random.choice(range(vocab_size), p=p.ravel())
-
         index = ix
         x = np.zeros((vocab_size, 1))
         x[index] = 1
@@ -248,6 +275,41 @@ if option == 'train':
         n_updates += 1
         if n_updates >= max_updates:
             break
+
+
+
+elif option == "test":
+    n, p = 0, 0
+    n_updates = 0
+
+    # momentum variables for Adagrad
+    mWex, mWhy = np.zeros_like(Wex), np.zeros_like(Why)
+    mby = np.zeros_like(by)
+
+    mWf, mWi, mWo, mWc = np.zeros_like(Wf), np.zeros_like(Wi), np.zeros_like(Wo), np.zeros_like(Wc)
+    mbf, mbi, mbo, mbc = np.zeros_like(bf), np.zeros_like(bi), np.zeros_like(bo), np.zeros_like(bc)
+
+    smooth_loss = -np.log(1.0 / vocab_size) * seq_length  # loss at iteration 0
+
+    data_length = cut_stream.shape[1]
+
+    while True:
+        # prepare inputs (we're sweeping from left to right in steps seq_length long)
+        if p + seq_length + 1 >= data_length or n == 0:
+            hprev = np.zeros((hidden_size, batch_size))  # reset RNN memory
+            cprev = np.zeros((hidden_size, batch_size))
+            p = 0  # go from start of data
+
+        inputs = cut_stream[:, p:p + seq_length].T
+        targets = cut_stream[:, p + 1:p + 1 + seq_length].T
+
+        # forward seq_length characters through the net and fetch gradient
+        loss, activations, memory = forward(inputs, targets, (hprev, cprev))
+        hprev, cprev = memory
+        n_updates += 1
+        if n_updates >= max_updates:
+            break
+
 
 elif option == 'gradcheck':
 
