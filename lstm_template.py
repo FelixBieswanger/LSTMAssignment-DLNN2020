@@ -7,6 +7,8 @@ import numpy as np
 from random import uniform
 import sys
 
+from numpy.core.fromnumeric import shape
+
 
 def sigmoid(x):
     return 1 / (1 + np.exp(-x))
@@ -43,7 +45,7 @@ emb_size = 16
 hidden_size = 256  # size of hidden layer of neurons
 seq_length = 128  # number of steps to unroll the RNN for
 learning_rate = 5e-2
-max_updates = 1
+max_updates = 10
 batch_size = 32
 
 concat_size = emb_size + hidden_size
@@ -68,7 +70,6 @@ Why = np.random.randn(vocab_size, hidden_size) * std  # hidden to output
 by = np.random.randn(vocab_size, 1) * std  # output bias
 
 data_stream = np.asarray([char_to_ix[char] for char in data])
-print(data_stream.shape)
 
 bound = (data_stream.shape[0] // (seq_length * batch_size)) * (seq_length * batch_size)
 cut_stream = data_stream[:bound]
@@ -90,16 +91,21 @@ def forward(inputs, targets, memory):
     # ins: input gate state at timestamp
     # cs: cell state
     # c_t: candidate content at timestamp
-    # o: output gate
+    # os: output gate
     # hs: hidden
     # outputs
     # ps: softmax output
     # ls: label as one hot vector
+    # yt: output of lstm cell (without softmax)
 
 
-    xs, wes, hs, ys, ps, cs, zs, ins, c_t, ls = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
+    xs, wes, hs, yt, ps, cs, zs, ins, c_t, ls = {}, {}, {}, {}, {}, {}, {}, {}, {}, {}
     os, fs = {}, {}
+
+    #old hidden state 
     hs[-1] = np.copy(hprev)
+
+    #old cell state
     cs[-1] = np.copy(cprev)
 
     loss = 0
@@ -147,8 +153,10 @@ def forward(inputs, targets, memory):
         # output layer - softmax and cross-entropy loss
         # unnormalized log probabilities for next chars
         # softmax for probabilities for next chars
-        ps[t] = softmax(Why.dot(hs[t])+by)
 
+        #predicted word for timestamp t
+        yt[t] = Why.dot(hs[t])+by
+        ps[t] = softmax(yt[t])
 
         # label
         ls[t] = np.zeros((vocab_size, batch_size))
@@ -167,7 +175,7 @@ def forward(inputs, targets, memory):
 
 
 def backward(activations, clipping=True):
-    xs, wes, hs, ys, ps, cs, zs, ins, c_s, ls, os, fs = activations
+    xs,wes,zs,fs,ins,cs,c_t,os,hs,ps,ls = activations
 
     # backward pass: compute gradients going backwards
     # Here we allocate memory for the gradients
@@ -184,7 +192,69 @@ def backward(activations, clipping=True):
     # back propagation through time starts here
     for t in reversed(range(input_length)):
         # computing the gradients here
-        pass
+
+        # Softmax loss gradient
+        dy = ps[t].copy()
+        dy[1,ls[t].astype(int)] -= 1.
+
+    ## Gradient for output in timestamp t => yt[t] = Why.dot(hs[t])+by
+        # weight gradient 
+
+        dWhy += dy.dot(hs[t].T)
+        # bias gradient (row sum)
+        dby += dy.sum(axis=1).reshape(by.shape[0],1)
+        # hidden state gradient
+        dh = np.dot(dWhy.T, dy) + dhnext
+
+    ## Gradient for os in hs[t] = os[t] * np.tanh(cs[t])
+        dos = dsigmoid(os[t]) * (np.tanh(cs[t]) * dh)
+
+    ## Gradient for cs in hs[t] = os[t] * np.tanh(cs[t])
+        dcs = (os[t] * dh * dtanh(cs[t])) + dcnext
+
+    ## Gradient for fs[t] in cs[t] = fs[t] * cs[t-1] + ins[t] * c_t[t]
+        dfs = dsigmoid(fs[t]) * (cs[t-1] * dcs)
+
+    ## Gradient for ins[t] in cs[t] = fs[t] * cs[t-1] + ins[t] * c_t[t]
+        dins = dsigmoid(ins[t]) * (c_t[t] * dcs)
+
+    ## Gradient for c_t[t] in cs[t] = fs[t] * cs[t-1] + ins[t] * c_t[t]
+        dc_t = dtanh(c_t[t]) * (ins[t] * dcs)
+
+    ## Gate Gradients
+        #Forget Gate Gradient
+        dWf += dfs.dot(zs[t].T)
+        dbf += dfs.sum(axis=1).reshape(bf.shape[0], 1)
+        dXf = Wf.T.dot(dfs)
+
+        #Input Gate Gradient
+        dWi += dins.dot(zs[t].T)
+        dbi += dins.sum(axis=1).reshape(bf.shape[0], 1)
+        dXi = Wi.T.dot(dins)
+
+        #Candidate Content Gradient
+        dWc += dc_t.dot(zs[t].T)
+        dbc += dc_t.sum(axis=1).reshape(bf.shape[0], 1)
+        dXc = Wi.T.dot(dc_t)
+
+        #Output Gate 
+        dWo += dos.dot(zs[t].T)
+        dbo += dos.sum(axis=1).reshape(bf.shape[0], 1)
+        dXo = Wo.T.dot(dos)
+
+        # As zs was used in multiple gates, the gradient must be accumulated here
+        dZs = dXo + dXc + dXi + dXf
+
+        # Split the concatenated Zs, so that we get our gradient of h_old
+        dhnext += dZs[:hidden_size,:]
+
+        # Split the concatenated Zs, for embedding
+        dwes = dZs[hidden_size:,:]
+        dWex += dwes.dot(xs[t].T)
+
+        # Gradient for c_old in c = hf * c_old + hi * hc
+        dcnext += fs[t] * dcs
+
 
     # clip to mitigate exploding gradients
     if clipping:
@@ -306,6 +376,7 @@ elif option == "test":
         # forward seq_length characters through the net and fetch gradient
         loss, activations, memory = forward(inputs, targets, (hprev, cprev))
         hprev, cprev = memory
+        backward(activations=activations)
         n_updates += 1
         if n_updates >= max_updates:
             break
