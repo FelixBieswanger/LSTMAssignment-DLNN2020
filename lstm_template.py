@@ -45,8 +45,8 @@ emb_size = 16
 hidden_size = 256  # size of hidden layer of neurons
 seq_length = 16  # number of steps to unroll the RNN for
 learning_rate = 0.005
-max_updates = 50000
-batch_size = 8
+max_updates = 1
+batch_size = 1
 
 concat_size = emb_size + hidden_size
 
@@ -194,8 +194,7 @@ def backward(activations, clipping=True):
         # computing the gradients here
 
         # Softmax loss gradient from helpsheet P - y
-        dy = ps[t].copy()
-        dy[ls[t].astype(int)] -= 1.
+        dy = ps[t].copy()-ls[t]
 
     ## Gradient for output in timestamp t => yt[t] = Why.dot(hs[t])+by
         # weight gradient 
