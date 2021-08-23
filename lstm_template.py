@@ -30,7 +30,7 @@ def softmax(x):
 
 
 # data I/O
-data = open('data/input.txt', 'r').read()  # should be simple plain text file
+data = open('data/input.short.txt', 'r').read()  # should be simple plain text file
 chars = sorted(list(set(data)))
 data_size, vocab_size = len(data), len(chars)
 print('data has %d characters, %d unique.' % (data_size, vocab_size))
@@ -43,10 +43,10 @@ option = sys.argv[1]
 # hyperparameters
 emb_size = 16
 hidden_size = 256  # size of hidden layer of neurons
-seq_length = 128  # number of steps to unroll the RNN for
-learning_rate = 5e-2
-max_updates = 10
-batch_size = 32
+seq_length = 16  # number of steps to unroll the RNN for
+learning_rate = 0.005
+max_updates = 50000
+batch_size = 8
 
 concat_size = emb_size + hidden_size
 
@@ -193,9 +193,9 @@ def backward(activations, clipping=True):
     for t in reversed(range(input_length)):
         # computing the gradients here
 
-        # Softmax loss gradient
+        # Softmax loss gradient from helpsheet P - y
         dy = ps[t].copy()
-        dy[1,ls[t].astype(int)] -= 1.
+        dy[ls[t].astype(int)] -= 1.
 
     ## Gradient for output in timestamp t => yt[t] = Why.dot(hs[t])+by
         # weight gradient 
@@ -203,17 +203,21 @@ def backward(activations, clipping=True):
         dWhy += dy.dot(hs[t].T)
         # bias gradient (row sum)
         dby += dy.sum(axis=1).reshape(by.shape[0],1)
-        # hidden state gradient
+        # hidden state gradient, add dhnext because it will be used for stacking in next timestamp [h,input]
         dh = np.dot(dWhy.T, dy) + dhnext
 
     ## Gradient for os in hs[t] = os[t] * np.tanh(cs[t])
-        dos = dsigmoid(os[t]) * (np.tanh(cs[t]) * dh)
+        dos = dtanh(cs[t]) * dh
+        dos = dsigmoid(os[t]) * dos
 
     ## Gradient for cs in hs[t] = os[t] * np.tanh(cs[t])
-        dcs = (os[t] * dh * dtanh(cs[t])) + dcnext
+        dostanh = dtanh(cs[t])
+        dcs = os[t] * dh * dostanh
+        dcs = dcs + dcnext
 
     ## Gradient for fs[t] in cs[t] = fs[t] * cs[t-1] + ins[t] * c_t[t]
-        dfs = dsigmoid(fs[t]) * (cs[t-1] * dcs)
+        dfs = cs[t-1] * dcs
+        dfs = dsigmoid(fs[t]) * dfs
 
     ## Gradient for ins[t] in cs[t] = fs[t] * cs[t-1] + ins[t] * c_t[t]
         dins = dsigmoid(ins[t]) * (c_t[t] * dcs)
@@ -246,14 +250,14 @@ def backward(activations, clipping=True):
         dZs = dXo + dXc + dXi + dXf
 
         # Split the concatenated Zs, so that we get our gradient of h_old
-        dhnext += dZs[:hidden_size,:]
+        dhnext = dZs[:hidden_size,:]
 
         # Split the concatenated Zs, for embedding
         dwes = dZs[hidden_size:,:]
         dWex += dwes.dot(xs[t].T)
 
         # Gradient for c_old in c = hf * c_old + hi * hc
-        dcnext += fs[t] * dcs
+        dcnext = fs[t] * dcs
 
 
     # clip to mitigate exploding gradients
@@ -271,16 +275,49 @@ def sample(memory, seed_ix, n):
     sample a sequence of integers from the model
     h is memory state, seed_ix is seed letter for first time step
     """
-
     h, c = memory
     x = np.zeros((vocab_size, 1))
     x[seed_ix] = 1
     ixes = []
+
     for t in range(n):
+          # convert word indices to word embeddings
+        wes = np.dot(Wex, x)
 
+        # LSTM cell operation
+        # first concatenate the input and h to get z
+        zs = np.row_stack((h, wes))
+
+        # compute the forget gate
+        # f = sigmoid(Wf * z + bf)
+        fs = sigmoid(Wf.dot(zs)+bf)
+
+        # compute the input gate
+        # i = sigmoid(Wi * z + bi)
+        ins = sigmoid(Wi.dot(zs)+bi)
+
+        # compute the candidate memory
+        # c_ = tanh(Wc * z + bc)
+        c_t = np.tanh(Wc.dot(zs)+bc)
+
+
+        # new memory: applying forget gate on the previous memory
+        # and then adding the input gate on the candidate memory
+        # c_t = f * c_(t-1) + i * c_
+        c = fs * c + ins * c_t
+
+        # output gate
+        #o = sigmoid(Wo * z + bo)
+        os = sigmoid(Wo.dot(zs) +bo)
+
+        #new hidden state
+        h = os * np.tanh(c)
+
+        #predicted word for timestamp t
+        yt = Why.dot(h)+by
         # forward pass again, but we do not have to store the activations now
-
-        p = np.exp(y) / np.sum(np.exp(y))
+        
+        p = np.exp(yt) / np.sum(np.exp(yt))
         ix = np.random.choice(range(vocab_size), p=p.ravel())
         index = ix
         x = np.zeros((vocab_size, 1))
@@ -319,7 +356,7 @@ if option == 'train':
         if n % 200 == 0:
             h_zero = np.zeros((hidden_size, 1))  # reset RNN memory
             c_zero = np.zeros((hidden_size, 1))
-            sample_ix = sample((h_zero, c_zero), inputs[0][0], 2000)
+            sample_ix = sample((h_zero, c_zero), inputs[0][0], 100)
             txt = ''.join(ix_to_char[ix] for ix in sample_ix)
             print('----\n %s \n----' % (txt,))
 
@@ -330,7 +367,7 @@ if option == 'train':
 
         dWex, dWf, dWi, dWo, dWc, dbf, dbi, dbo, dbc, dWhy, dby = gradients
         smooth_loss = smooth_loss * 0.999 + loss/batch_size * 0.001
-        if n % 20 == 0:
+        if n % 10 == 0:
             print('iter %d, loss: %f' % (n, smooth_loss))  # print progress
 
         # perform parameter update with Adagrad
