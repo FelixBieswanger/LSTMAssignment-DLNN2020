@@ -132,6 +132,10 @@ def forward(inputs, targets, memory):
         # i = sigmoid(Wi * z + bi)
         ins[t] = sigmoid(Wi.dot(zs[t])+bi)
 
+        # output gate
+        #o = sigmoid(Wo * z + bo)
+        os[t] = sigmoid(Wo.dot(zs[t]) + bo)
+
         # compute the candidate memory
         # c_ = tanh(Wc * z + bc)
         c_t[t] = np.tanh(Wc.dot(zs[t])+bc)
@@ -140,12 +144,8 @@ def forward(inputs, targets, memory):
         # new memory: applying forget gate on the previous memory
         # and then adding the input gate on the candidate memory
         # c_t = f * c_(t-1) + i * c_
-        cs[t] = fs[t] * cs[t-1] + ins[t] * c_t[t]
-
-        # output gate
-        #o = sigmoid(Wo * z + bo)
-        os[t] = sigmoid(Wo.dot(zs[t]) +bo)
-
+        cs[t] = (fs[t] * cs[t-1]) + (ins[t] * c_t[t])
+       
         #new hidden state
         hs[t] = os[t] * np.tanh(cs[t])
 
