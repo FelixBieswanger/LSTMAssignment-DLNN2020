@@ -42,11 +42,11 @@ option = sys.argv[1]
 
 # hyperparameters
 emb_size = 12
-hidden_size = 16  # size of hidden layer of neurons
-seq_length = 32  # number of steps to unroll the RNN for
+hidden_size = 8  # size of hidden layer of neurons
+seq_length = 48  # number of steps to unroll the RNN for
 learning_rate = 0.02
 max_updates = 500000
-batch_size = 8
+batch_size = 4 #?
 
 concat_size = emb_size + hidden_size
 
@@ -208,16 +208,13 @@ def backward(activations, clipping=True):
         # Gradient for c_old in cs = fs * cs[t-1] + ins * c_t
         dcnext = fs[t] * dcs 
 
-
         #Output Gate
         dos = np.tanh(cs[t]) * dhs
         dos = dsigmoid(os[t]) * dos
         dWo += dos.dot(zs[t].T)
         dbo += dos.sum(axis=1, keepdims=True)
         dXo = Wo.T.dot(dos)
-
       
-
         #Forget Gate Gradient
         dfs = dsigmoid(fs[t]) * (cs[t-1] * dcs)
         dWf += dfs.dot(zs[t].T)
@@ -246,9 +243,6 @@ def backward(activations, clipping=True):
         # Split the concatenated Zs, for embedding
         dwes = dZs[hidden_size:,:]
         dWex += dwes.dot(xs[t].T)
-
-       
-
 
     # clip to mitigate exploding gradients
     if clipping:
