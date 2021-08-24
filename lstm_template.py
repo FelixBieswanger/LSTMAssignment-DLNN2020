@@ -30,7 +30,7 @@ def softmax(x):
 
 
 # data I/O
-data = open('data/input.short.txt', 'r').read()  # should be simple plain text file
+data = open('data/whatsapp.txt', 'r').read()  # should be simple plain text file
 chars = sorted(list(set(data)))
 data_size, vocab_size = len(data), len(chars)
 print('data has %d characters, %d unique.' % (data_size, vocab_size))
@@ -41,12 +41,12 @@ std = 0.1
 option = sys.argv[1]
 
 # hyperparameters
-emb_size = 16
-hidden_size = 256  # size of hidden layer of neurons
-seq_length = 16  # number of steps to unroll the RNN for
-learning_rate = 0.005
-max_updates = 1
-batch_size = 1
+emb_size = 12
+hidden_size = 16  # size of hidden layer of neurons
+seq_length = 32  # number of steps to unroll the RNN for
+learning_rate = 0.02
+max_updates = 500000
+batch_size = 8
 
 concat_size = emb_size + hidden_size
 
@@ -121,9 +121,8 @@ def forward(inputs, targets, memory):
         wes[t] = np.dot(Wex, xs[t])
 
         # LSTM cell operation
-        # first concatenate the input and h to get z
+        # first concatenate the input and h to get z        
         zs[t] = np.row_stack((hs[t - 1], wes[t]))
-
         # compute the forget gate
         # f = sigmoid(Wf * z + bf)
         fs[t] = sigmoid(Wf.dot(zs[t])+bf)
@@ -194,56 +193,49 @@ def backward(activations, clipping=True):
         # computing the gradients here
 
         # Softmax loss gradient from helpsheet P - y
-        dy = ps[t].copy()-ls[t]
+        dy = ps[t]-ls[t] 
 
-    ## Gradient for output in timestamp t => yt[t] = Why.dot(hs[t])+by
-        # weight gradient 
-
+        #(Fully Conected) Output Layer
         dWhy += dy.dot(hs[t].T)
         # bias gradient (row sum)
-        dby += dy.sum(axis=1).reshape(by.shape[0],1)
+        dby += dy.sum(axis=-1,keepdims=True)
+
         # hidden state gradient, add dhnext because it will be used for stacking in next timestamp [h,input]
-        dh = np.dot(dWhy.T, dy) + dhnext
+        dhs = np.dot(Why.T, dy) + dhnext
 
-    ## Gradient for os in hs[t] = os[t] * np.tanh(cs[t])
-        dos = dtanh(cs[t]) * dh
+        #Gradient cell state
+        dcs = dhs * dtanh(cs[t])* os[t] + dcnext
+        # Gradient for c_old in cs = fs * cs[t-1] + ins * c_t
+        dcnext = fs[t] * dcs 
+
+
+        #Output Gate
+        dos = np.tanh(cs[t]) * dhs
         dos = dsigmoid(os[t]) * dos
+        dWo += dos.dot(zs[t].T)
+        dbo += dos.sum(axis=1, keepdims=True)
+        dXo = Wo.T.dot(dos)
 
-    ## Gradient for cs in hs[t] = os[t] * np.tanh(cs[t])
-        dostanh = dtanh(cs[t])
-        dcs = os[t] * dh * dostanh
-        dcs = dcs + dcnext
+      
 
-    ## Gradient for fs[t] in cs[t] = fs[t] * cs[t-1] + ins[t] * c_t[t]
-        dfs = cs[t-1] * dcs
-        dfs = dsigmoid(fs[t]) * dfs
-
-    ## Gradient for ins[t] in cs[t] = fs[t] * cs[t-1] + ins[t] * c_t[t]
-        dins = dsigmoid(ins[t]) * (c_t[t] * dcs)
-
-    ## Gradient for c_t[t] in cs[t] = fs[t] * cs[t-1] + ins[t] * c_t[t]
-        dc_t = dtanh(c_t[t]) * (ins[t] * dcs)
-
-    ## Gate Gradients
         #Forget Gate Gradient
+        dfs = dsigmoid(fs[t]) * (cs[t-1] * dcs)
         dWf += dfs.dot(zs[t].T)
-        dbf += dfs.sum(axis=1).reshape(bf.shape[0], 1)
+        dbf += dfs.sum(axis=-1,keepdims=True)
         dXf = Wf.T.dot(dfs)
 
         #Input Gate Gradient
-        dWi += dins.dot(zs[t].T)
-        dbi += dins.sum(axis=1).reshape(bf.shape[0], 1)
-        dXi = Wi.T.dot(dins)
+        dins = (c_t[t] * dcs)
+        dins_pre = dsigmoid(ins[t]) * dins
+        dWi += dins_pre.dot(zs[t].T)
+        dbi += dins_pre.sum(axis=-1, keepdims=True)
+        dXi = Wi.T.dot(dins_pre)
 
         #Candidate Content Gradient
+        dc_t = dtanh(c_t[t]) * (ins[t] * dcs)
         dWc += dc_t.dot(zs[t].T)
-        dbc += dc_t.sum(axis=1).reshape(bf.shape[0], 1)
-        dXc = Wi.T.dot(dc_t)
-
-        #Output Gate 
-        dWo += dos.dot(zs[t].T)
-        dbo += dos.sum(axis=1).reshape(bf.shape[0], 1)
-        dXo = Wo.T.dot(dos)
+        dbc += dc_t.sum(axis=-1, keepdims=True)
+        dXc = Wc.T.dot(dc_t)
 
         # As zs was used in multiple gates, the gradient must be accumulated here
         dZs = dXo + dXc + dXi + dXf
@@ -255,8 +247,7 @@ def backward(activations, clipping=True):
         dwes = dZs[hidden_size:,:]
         dWex += dwes.dot(xs[t].T)
 
-        # Gradient for c_old in c = hf * c_old + hi * hc
-        dcnext = fs[t] * dcs
+       
 
 
     # clip to mitigate exploding gradients
@@ -316,12 +307,14 @@ def sample(memory, seed_ix, n):
         yt = Why.dot(h)+by
         # forward pass again, but we do not have to store the activations now
         
+        #softmax
         p = np.exp(yt) / np.sum(np.exp(yt))
         ix = np.random.choice(range(vocab_size), p=p.ravel())
         index = ix
         x = np.zeros((vocab_size, 1))
         x[index] = 1
         ixes.append(index)
+
     return ixes
 
 
@@ -352,10 +345,10 @@ if option == 'train':
         targets = cut_stream[:, p + 1:p + 1 + seq_length].T
 
         # sample from the model now and then
-        if n % 200 == 0:
+        if n % 1000 == 0:
             h_zero = np.zeros((hidden_size, 1))  # reset RNN memory
             c_zero = np.zeros((hidden_size, 1))
-            sample_ix = sample((h_zero, c_zero), inputs[0][0], 100)
+            sample_ix = sample((h_zero, c_zero), inputs[0][0], 1500)
             txt = ''.join(ix_to_char[ix] for ix in sample_ix)
             print('----\n %s \n----' % (txt,))
 
@@ -447,6 +440,7 @@ elif option == 'gradcheck':
         assert (weight.shape == grad.shape), str_
 
         print(name)
+        print(weight.size)
         countidx = 0
         gradnumsum = 0
         gradanasum = 0
@@ -454,6 +448,7 @@ elif option == 'gradcheck':
         erroridx = []
 
         for i in range(weight.size):
+            
 
             # evaluate cost at [x + delta] and [x - delta]
             w = weight.flat[i]
@@ -473,7 +468,7 @@ elif option == 'gradcheck':
             relerrorsum += rel_error
 
             if rel_error > 0.001:
-                print ('WARNING %f, %f => %e ' % (grad_numerical, grad_analytic, rel_error))
+                #print ('WARNING %f, %f => %e ' % (grad_numerical, grad_analytic, rel_error))
                 countidx += 1
                 erroridx.append(i)
                 
