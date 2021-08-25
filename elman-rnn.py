@@ -296,7 +296,7 @@ if option == 'train':
         p += seq_length  # move data pointer
         n += 1  # iteration counter
 
-    with open("elman-rnn_loss.json","w") as file:
+    with open("losstracking/elman-rnn_loss.json", "w") as file:
         file.write(json.dumps(store))
 
 

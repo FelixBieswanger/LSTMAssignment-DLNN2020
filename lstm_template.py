@@ -418,7 +418,7 @@ if option == 'train':
         if n_updates >= max_updates:
             break
 
-    with open("lstm_loss.json", "w") as file:
+    with open("losstracking/lstm_loss.json", "w") as file:
         file.write(json.dumps(store))
 
     if not os.path.isdir(path):
