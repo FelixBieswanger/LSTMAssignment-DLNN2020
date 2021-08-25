@@ -6,6 +6,7 @@ BSD License
 import numpy as np
 from random import uniform
 import sys
+import os
 
 from numpy.core.fromnumeric import shape
 
@@ -41,33 +42,67 @@ std = 0.1
 option = sys.argv[1]
 
 # hyperparameters
-emb_size = 12
-hidden_size = 8  # size of hidden layer of neurons
+emb_size = 64
+hidden_size = 128   # size of hidden layer of neurons
 seq_length = 48  # number of steps to unroll the RNN for
+batch_size = 5 #?
+path = "trained_parameters/param=emb_size:"+str(emb_size)+"&hidden_size:"+str(
+    hidden_size)+"&seq_length:"+str(seq_length)+"&batch_size:"+str(batch_size)+"/"
+
+# tunable parameters 
 learning_rate = 0.02
-max_updates = 500000
-batch_size = 4 #?
+max_updates = 5000
+retrain = False
 
 concat_size = emb_size + hidden_size
 
-# model parameters
-# char embedding parameters
-Wex = np.random.randn(emb_size, vocab_size) * std  # embedding layer
+if os.path.isdir(path) and not retrain:
+    #load params
+    Wex = np.loadtxt(path+"Wex.txt",delimiter=",") # embedding layer
 
-# LSTM parameters
-Wf = np.random.randn(hidden_size, concat_size) * std  # forget gate
-Wi = np.random.randn(hidden_size, concat_size) * std  # input gate
-Wo = np.random.randn(hidden_size, concat_size) * std  # output gate
-Wc = np.random.randn(hidden_size, concat_size) * std  # c term
+    # LSTM parameters
+    Wf = np.loadtxt(path+"Wf.txt", delimiter=",")  # forget gate
+    Wi = np.loadtxt(path+"Wi.txt", delimiter=",")  # input gate
+    Wo = np.loadtxt(path+"Wo.txt", delimiter=",")  # output gate
+    Wc = np.loadtxt(path+"Wc.txt", delimiter=",")  # c term
 
-bf = np.zeros((hidden_size, 1))  # forget bias
-bi = np.zeros((hidden_size, 1))  # input bias
-bo = np.zeros((hidden_size, 1))  # output bias
-bc = np.zeros((hidden_size, 1))  # memory bias
+    bf = np.loadtxt(path+"bf.txt", delimiter=",")
+    bf = bf.reshape(bf.shape[0],1)  # forget bias
+    bi = np.loadtxt(path+"bi.txt", delimiter=",")
+    bi = bf.reshape(bi.shape[0], 1)  # input bias
+    bo = np.loadtxt(path+"bo.txt", delimiter=",")
+    bo = bo.reshape(bo.shape[0], 1)  # output bias
+    bc = np.loadtxt(path+"bc.txt", delimiter=",")
+    bc = bc.reshape(bc.shape[0], 1)  # memory bias
 
-# Output layer parameters
-Why = np.random.randn(vocab_size, hidden_size) * std  # hidden to output
-by = np.random.randn(vocab_size, 1) * std  # output bias
+    # Output layer parameters
+    Why = np.loadtxt(path+"Why.txt", delimiter=",")  # hidden to output
+    by = np.loadtxt(path+"by.txt", delimiter=",")
+    by = by.reshape(by.shape[0], 1)  # output bias
+    
+
+
+    print("Loaded weights and biases from previous training..")
+else:
+    # model parameters
+    # char embedding parameters
+    Wex = np.random.randn(emb_size, vocab_size) * std  # embedding layer
+
+    # LSTM parameters
+    Wf = np.random.randn(hidden_size, concat_size) * std  # forget gate
+    Wi = np.random.randn(hidden_size, concat_size) * std  # input gate
+    Wo = np.random.randn(hidden_size, concat_size) * std  # output gate
+    Wc = np.random.randn(hidden_size, concat_size) * std  # c term
+
+    bf = np.zeros((hidden_size, 1))  # forget bias
+    bi = np.zeros((hidden_size, 1))  # input bias
+    bo = np.zeros((hidden_size, 1))  # output bias
+    bc = np.zeros((hidden_size, 1))  # memory bias
+
+    # Output layer parameters
+    Why = np.random.randn(vocab_size, hidden_size) * std  # hidden to output
+    by = np.random.randn(vocab_size, 1) * std  # output bias
+    print("Create new Weights")
 
 data_stream = np.asarray([char_to_ix[char] for char in data])
 
@@ -265,7 +300,7 @@ def sample(memory, seed_ix, n):
     ixes = []
 
     for t in range(n):
-          # convert word indices to word embeddings
+
         wes = np.dot(Wex, x)
 
         # LSTM cell operation
@@ -312,6 +347,17 @@ def sample(memory, seed_ix, n):
     return ixes
 
 
+if option == "sample":
+    if sys.argv[2] == None:
+        n = 5000
+    h_zero = np.zeros((hidden_size, 1))  # reset RNN memory
+    c_zero = np.zeros((hidden_size, 1))
+    sample_ix = sample((h_zero, c_zero), np.random.choice(
+        data_stream), int(sys.argv[2]))
+    txt = ''.join(ix_to_char[ix] for ix in sample_ix)
+    print('----\n %s \n----' % (txt,))
+
+
 if option == 'train':
 
     n, p = 0, 0
@@ -342,7 +388,7 @@ if option == 'train':
         if n % 1000 == 0:
             h_zero = np.zeros((hidden_size, 1))  # reset RNN memory
             c_zero = np.zeros((hidden_size, 1))
-            sample_ix = sample((h_zero, c_zero), inputs[0][0], 1500)
+            sample_ix = sample((h_zero, c_zero), inputs[0][0], 400)
             txt = ''.join(ix_to_char[ix] for ix in sample_ix)
             print('----\n %s \n----' % (txt,))
 
@@ -368,7 +414,13 @@ if option == 'train':
         n_updates += 1
         if n_updates >= max_updates:
             break
-
+    
+    if not os.path.isdir(path):
+        os.mkdir(path)
+    for weight,name in zip([Wf, Wi, Wo, Wc, bf, bi, bo, bc, Wex, Why, by],
+                           ["Wf", "Wi", "Wo", "Wc", "bf", "bi", "bo", "bc", "Wex", "Why", "by"]):
+        np.savetxt(path+name+".txt", weight, delimiter=",")
+    print("saved weights")
 
 
 elif option == "test":
