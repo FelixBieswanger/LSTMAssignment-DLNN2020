@@ -6,7 +6,7 @@ BSD License
 import numpy as np
 from random import uniform
 import sys
-
+import json
 
 # Since numpy doesn't have a function for sigmoid
 # We implement it manually here
@@ -42,13 +42,17 @@ char_to_ix = {ch: i for i, ch in enumerate(chars)}
 ix_to_char = {i: ch for i, ch in enumerate(chars)}
 
 # hyper-parameters deciding the network size
-emb_size = 4  # word/character embedding size
-seq_length = 32  # number of steps to unroll the RNN for the truncated back-propagation algorithm
-hidden_size = 32
+emb_size = 16  # word/character embedding size
+seq_length = 24  # number of steps to unroll the RNN for the truncated back-propagation algorithm
+hidden_size = 48
 # learning rate for the Adagrad algorithm. (this one is not 'optimized', only required to make the model learn)
 learning_rate = 0.02
 std = 0.02  # The standard deviation for parameter initilization
-batch_size = 4
+batch_size = 1
+
+
+store = dict()
+
 
 # model parameters
 # Here we initialize the parameters based an random uniform distribution, with the std of 0.01
@@ -257,7 +261,7 @@ if option == 'train':
     # should be the vocabulary for every position. So this is the loss at iteration 0
     smooth_loss = -np.log(1.0 / vocab_size) * seq_length  # loss at iteration 0
 
-    while True:
+    while n < 5000:
         # prepare inputs (we're sweeping from left to right in steps seq_length long)
         if p + seq_length + 1 >= data_length or n == 0:
             hprev = np.zeros((hidden_size, batch_size))  # reset RNN memory
@@ -278,7 +282,8 @@ if option == 'train':
         gradients = backward(activations)
         dWex, dWxh, dWhh, dWhy, dbh, dby = gradients
         smooth_loss = smooth_loss * 0.999 + loss / batch_size * 0.001
-        if n % 20 == 0:
+        if n % 10 == 0:
+            store[n] = smooth_loss
             print('iter %d, loss: %f' % (n, smooth_loss))  # print progress
 
         # perform parameter update with Adagrad
@@ -290,6 +295,10 @@ if option == 'train':
 
         p += seq_length  # move data pointer
         n += 1  # iteration counter
+
+    with open("elman-rnn_loss.json","w") as file:
+        file.write(json.dumps(store))
+
 
 elif option == 'gradcheck':
 

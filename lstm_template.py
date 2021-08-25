@@ -7,8 +7,10 @@ import numpy as np
 from random import uniform
 import sys
 import os
-
+import json
 from numpy.core.fromnumeric import shape
+
+store=dict()
 
 
 def sigmoid(x):
@@ -31,7 +33,7 @@ def softmax(x):
 
 
 # data I/O
-data = open('data/whatsapp.txt', 'r').read()  # should be simple plain text file
+data = open('data/input.txt', 'r').read()  # should be simple plain text file
 chars = sorted(list(set(data)))
 data_size, vocab_size = len(data), len(chars)
 print('data has %d characters, %d unique.' % (data_size, vocab_size))
@@ -42,17 +44,17 @@ std = 0.1
 option = sys.argv[1]
 
 # hyperparameters
-emb_size = 64
-hidden_size = 128   # size of hidden layer of neurons
-seq_length = 48  # number of steps to unroll the RNN for
-batch_size = 5 #?
+emb_size = 16
+hidden_size = 48   # size of hidden layer of neurons
+seq_length = 24  # number of steps to unroll the RNN for
+batch_size = 1 #?
 path = "trained_parameters/param=emb_size:"+str(emb_size)+"&hidden_size:"+str(
     hidden_size)+"&seq_length:"+str(seq_length)+"&batch_size:"+str(batch_size)+"/"
 
 # tunable parameters 
 learning_rate = 0.02
 max_updates = 5000
-retrain = False
+retrain = True
 
 concat_size = emb_size + hidden_size
 
@@ -388,7 +390,7 @@ if option == 'train':
         if n % 1000 == 0:
             h_zero = np.zeros((hidden_size, 1))  # reset RNN memory
             c_zero = np.zeros((hidden_size, 1))
-            sample_ix = sample((h_zero, c_zero), inputs[0][0], 400)
+            sample_ix = sample((h_zero, c_zero), inputs[0][0], 1500)
             txt = ''.join(ix_to_char[ix] for ix in sample_ix)
             print('----\n %s \n----' % (txt,))
 
@@ -401,6 +403,7 @@ if option == 'train':
         smooth_loss = smooth_loss * 0.999 + loss/batch_size * 0.001
         if n % 10 == 0:
             print('iter %d, loss: %f' % (n, smooth_loss))  # print progress
+            store[n] = smooth_loss
 
         # perform parameter update with Adagrad
         for param, dparam, mem in zip([Wf, Wi, Wo, Wc, bf, bi, bo, bc, Wex, Why, by],
@@ -414,7 +417,10 @@ if option == 'train':
         n_updates += 1
         if n_updates >= max_updates:
             break
-    
+
+    with open("lstm_loss.json", "w") as file:
+        file.write(json.dumps(store))
+
     if not os.path.isdir(path):
         os.mkdir(path)
     for weight,name in zip([Wf, Wi, Wo, Wc, bf, bi, bo, bc, Wex, Why, by],
