@@ -9,6 +9,9 @@ import sys
 import os
 import json
 from numpy.core.fromnumeric import shape
+import matplotlib.pyplot as plt
+from numpy.core.numeric import NaN
+from numpy.core.records import array
 
 store=dict()
 
@@ -32,8 +35,23 @@ def softmax(x):
     return e_x / e_x.sum(axis=0)
 
 
+#loss 
+min_loss = None
+args = sys.argv[1:]
+option_index = args.index("--option")
+emb_size_index = args.index("--emb")
+hidden_size_index = args.index("--hidden")
+seq_length_index = args.index("--seq")
+batch_size_index = args.index("--batch")
+data_index = args.index("--data")
+
+
+option = args[option_index+1]
+
+
 # data I/O
-data = open('data/input.txt', 'r').read()  # should be simple plain text file
+data_name = args[data_index+1]
+data = open('data/'+data_name+'.txt', 'r').read()  # should be simple plain text file
 chars = sorted(list(set(data)))
 data_size, vocab_size = len(data), len(chars)
 print('data has %d characters, %d unique.' % (data_size, vocab_size))
@@ -41,20 +59,22 @@ char_to_ix = {ch: i for i, ch in enumerate(chars)}
 ix_to_char = {i: ch for i, ch in enumerate(chars)}
 std = 0.1
 
-option = sys.argv[1]
+
+
+
 
 # hyperparameters
-emb_size = 16
-hidden_size = 48   # size of hidden layer of neurons
-seq_length = 24  # number of steps to unroll the RNN for
-batch_size = 1 #?
+emb_size = int(args[emb_size_index+1])
+hidden_size = int(args[hidden_size_index+1])    # size of hidden layer of neurons
+seq_length = int(args[seq_length_index+1])  # number of steps to unroll the RNN for
+batch_size = int(args[batch_size_index+1])  
 path = "trained_parameters/param=emb_size:"+str(emb_size)+"&hidden_size:"+str(
-    hidden_size)+"&seq_length:"+str(seq_length)+"&batch_size:"+str(batch_size)+"/"
+    hidden_size)+"&seq_length:"+str(seq_length)+"&batch_size:"+str(batch_size)+"&data:"+data_name+"/"
 
 # tunable parameters 
-learning_rate = 0.02
-max_updates = 5000
-retrain = True
+learning_rate = 0.009
+max_updates = 10000
+retrain = False
 
 concat_size = emb_size + hidden_size
 
@@ -160,6 +180,7 @@ def forward(inputs, targets, memory):
         # LSTM cell operation
         # first concatenate the input and h to get z        
         zs[t] = np.row_stack((hs[t - 1], wes[t]))
+
         # compute the forget gate
         # f = sigmoid(Wf * z + bf)
         fs[t] = sigmoid(Wf.dot(zs[t])+bf)
@@ -167,10 +188,6 @@ def forward(inputs, targets, memory):
         # compute the input gate
         # i = sigmoid(Wi * z + bi)
         ins[t] = sigmoid(Wi.dot(zs[t])+bi)
-
-        # output gate
-        #o = sigmoid(Wo * z + bo)
-        os[t] = sigmoid(Wo.dot(zs[t]) + bo)
 
         # compute the candidate memory
         # c_ = tanh(Wc * z + bc)
@@ -180,7 +197,11 @@ def forward(inputs, targets, memory):
         # new memory: applying forget gate on the previous memory
         # and then adding the input gate on the candidate memory
         # c_t = f * c_(t-1) + i * c_
-        cs[t] = (fs[t] * cs[t-1]) + (ins[t] * c_t[t])
+        cs[t] = fs[t] * cs[t-1] + ins[t] * c_t[t]
+
+        # output gate
+        #o = sigmoid(Wo * z + bo)
+        os[t] = sigmoid(Wo.dot(zs[t]) + bo)
        
         #new hidden state
         hs[t] = os[t] * np.tanh(cs[t])
@@ -200,9 +221,10 @@ def forward(inputs, targets, memory):
             ls[t][targets[t][b]][b] = 1
 
         # cross-entropy loss
-        loss_t = np.sum(-np.log(ps[t]) * ls[t])
-        loss += loss_t
-        #loss += -np.log(ps[t][targets[t],0])
+        #loss_t = np.sum(-np.log(ps[t]) * ls[t])
+        #loss += loss_t
+        log_likelihood = -np.log(ps[t][targets[t],0])
+        loss += np.sum(log_likelihood) / batch_size
 
     activations = (xs, wes, zs,fs, ins, cs, c_t, os, hs, ps, ls)
     memory = (hs[input_length - 1], cs[input_length -1])
@@ -230,46 +252,49 @@ def backward(activations, clipping=True):
         # computing the gradients here
 
         # Softmax loss gradient from helpsheet P - y
-        dy = ps[t]-ls[t] 
-
+        dy = (ps[t]-ls[t])
+ 
         #(Fully Conected) Output Layer
         dWhy += dy.dot(hs[t].T)
         # bias gradient (row sum)
-        dby += dy.sum(axis=-1,keepdims=True)
+        dby += np.sum(dy, axis=-1, keepdims=True)
 
         # hidden state gradient, add dhnext because it will be used for stacking in next timestamp [h,input]
-        dhs = np.dot(Why.T, dy) + dhnext
+        dhs = np.dot(Why.T, dy) 
+        dhs += dhnext
 
-        #Gradient cell state
-        dcs = dhs * dtanh(cs[t])* os[t] + dcnext
+        #Gradient cell state hs = os * tanh(cs)
+        dcs = dhs * dtanh(np.tanh(cs[t]))* os[t] + dcnext
         # Gradient for c_old in cs = fs * cs[t-1] + ins * c_t
         dcnext = fs[t] * dcs 
 
         #Output Gate
         dos = np.tanh(cs[t]) * dhs
-        dos = dsigmoid(os[t]) * dos
-        dWo += dos.dot(zs[t].T)
-        dbo += dos.sum(axis=1, keepdims=True)
-        dXo = Wo.T.dot(dos)
+        dos_pre = dsigmoid(os[t]) * dos
+        dWo += dos_pre.dot(zs[t].T)
+        dbo += np.sum(dos_pre, axis=-1, keepdims=True)
+        dXo = Wo.T.dot(dos_pre)
       
         #Forget Gate Gradient
-        dfs = dsigmoid(fs[t]) * (cs[t-1] * dcs)
-        dWf += dfs.dot(zs[t].T)
-        dbf += dfs.sum(axis=-1,keepdims=True)
-        dXf = Wf.T.dot(dfs)
+        dfs = cs[t-1] * dcs
+        dfs_pre = dsigmoid(fs[t]) * dfs
+        dWf += dfs_pre.dot(zs[t].T)
+        dbf += np.sum(dfs_pre, axis=-1, keepdims=True)
+        dXf = Wf.T.dot(dfs_pre)
 
         #Input Gate Gradient
-        dins = (c_t[t] * dcs)
+        dins = c_t[t] * dcs
         dins_pre = dsigmoid(ins[t]) * dins
         dWi += dins_pre.dot(zs[t].T)
-        dbi += dins_pre.sum(axis=-1, keepdims=True)
+        dbi += np.sum(dins_pre, axis=-1, keepdims=True)
         dXi = Wi.T.dot(dins_pre)
 
         #Candidate Content Gradient
-        dc_t = dtanh(c_t[t]) * (ins[t] * dcs)
-        dWc += dc_t.dot(zs[t].T)
-        dbc += dc_t.sum(axis=-1, keepdims=True)
-        dXc = Wc.T.dot(dc_t)
+        dc_t = ins[t] * dcs
+        dc_t_pre = dtanh(c_t[t]) * dc_t
+        dWc += dc_t_pre.dot(zs[t].T)
+        dbc += np.sum(dc_t_pre, axis=-1, keepdims=True)
+        dXc = Wc.T.dot(dc_t_pre)
 
         # As zs was used in multiple gates, the gradient must be accumulated here
         dZs = dXo + dXc + dXi + dXf
@@ -291,23 +316,37 @@ def backward(activations, clipping=True):
     return gradients
 
 
-def sample(memory, seed_ix, n):
+def sample(memory, seed_ix, n, text = ""):
     """
     sample a sequence of integers from the model
     h is memory state, seed_ix is seed letter for first time step
     """
-    h, c = memory
-    x = np.zeros((vocab_size, 1))
-    x[seed_ix] = 1
+    h_prev, c_prev = memory
+    text_ix = [char_to_ix[char] for char in text]
+    
+    
+    if text == "":
+        x = np.zeros((vocab_size, 1))
+        x[seed_ix] = 1
+    else:
+        print("Input Text:", text)
+
+
     ixes = []
 
     for t in range(n):
+
+        if len(text_ix) > 0:
+            text_char_ix = text_ix.pop(0)
+            ixes.append(text_char_ix)
+            x = np.zeros((vocab_size, 1))
+            x[text_char_ix] = 1
 
         wes = np.dot(Wex, x)
 
         # LSTM cell operation
         # first concatenate the input and h to get z
-        zs = np.row_stack((h, wes))
+        zs = np.row_stack((h_prev, wes))
 
         # compute the forget gate
         # f = sigmoid(Wf * z + bf)
@@ -321,11 +360,10 @@ def sample(memory, seed_ix, n):
         # c_ = tanh(Wc * z + bc)
         c_t = np.tanh(Wc.dot(zs)+bc)
 
-
         # new memory: applying forget gate on the previous memory
         # and then adding the input gate on the candidate memory
         # c_t = f * c_(t-1) + i * c_
-        c = fs * c + ins * c_t
+        c = fs * c_prev + ins * c_t
 
         # output gate
         #o = sigmoid(Wo * z + bo)
@@ -339,26 +377,28 @@ def sample(memory, seed_ix, n):
         # forward pass again, but we do not have to store the activations now
         
         #softmax
-        p = np.exp(yt) / np.sum(np.exp(yt))
-        ix = np.random.choice(range(vocab_size), p=p.ravel())
-        index = ix
-        x = np.zeros((vocab_size, 1))
-        x[index] = 1
-        ixes.append(index)
+        p = softmax(yt)
+        
+        if len(text_ix) == 0:
+            # the the distribution, we randomly generate samples:
+            ix = np.random.choice(range(vocab_size), p=p.ravel())
+            x = np.zeros((vocab_size, 1))
+            x[ix] = 1
+            ixes.append(ix)
 
+        h_prev,c_prev = h,c
     return ixes
 
 
 if option == "sample":
-    if sys.argv[2] == None:
-        n = 5000
+    sample_n_index = args.index("--n")
+    sample_text_index = args.index("--text")
     h_zero = np.zeros((hidden_size, 1))  # reset RNN memory
     c_zero = np.zeros((hidden_size, 1))
     sample_ix = sample((h_zero, c_zero), np.random.choice(
-        data_stream), int(sys.argv[2]))
+        data_stream), int(args[sample_n_index+1]), args[sample_text_index+1])
     txt = ''.join(ix_to_char[ix] for ix in sample_ix)
     print('----\n %s \n----' % (txt,))
-
 
 if option == 'train':
 
@@ -390,7 +430,7 @@ if option == 'train':
         if n % 1000 == 0:
             h_zero = np.zeros((hidden_size, 1))  # reset RNN memory
             c_zero = np.zeros((hidden_size, 1))
-            sample_ix = sample((h_zero, c_zero), inputs[0][0], 1500)
+            sample_ix = sample((h_zero, c_zero), inputs[0][0], 500)
             txt = ''.join(ix_to_char[ix] for ix in sample_ix)
             print('----\n %s \n----' % (txt,))
 
@@ -401,8 +441,14 @@ if option == 'train':
 
         dWex, dWf, dWi, dWo, dWc, dbf, dbi, dbo, dbc, dWhy, dby = gradients
         smooth_loss = smooth_loss * 0.999 + loss/batch_size * 0.001
+
+        if min_loss is None:
+            min_loss = smooth_loss
+        elif smooth_loss < min_loss:
+            min_loss = smooth_loss
+
         if n % 10 == 0:
-            print('iter %d, loss: %f' % (n, smooth_loss))  # print progress
+            print('iter %d, loss: %f, min-loss: %f' % (n, smooth_loss, min_loss))  # print progress
             store[n] = smooth_loss
 
         # perform parameter update with Adagrad
@@ -415,11 +461,10 @@ if option == 'train':
         p += seq_length  # move data pointer
         n += 1  # iteration counter
         n_updates += 1
-        if n_updates >= max_updates:
-            break
 
-    with open("losstracking/lstm_loss.json", "w") as file:
-        file.write(json.dumps(store))
+        #add stop if loss starts increasing to much
+        if n_updates >= max_updates or (min_loss / smooth_loss) < 0.99:
+            break
 
     if not os.path.isdir(path):
         os.mkdir(path)
@@ -427,6 +472,14 @@ if option == 'train':
                            ["Wf", "Wi", "Wo", "Wc", "bf", "bi", "bo", "bc", "Wex", "Why", "by"]):
         np.savetxt(path+name+".txt", weight, delimiter=",")
     print("saved weights")
+
+    fig, ax = plt.subplots(figsize=(20, 10))
+    plt.plot(list(store.keys()), list(store.values()))
+    plt.ylabel("Loss")
+    plt.xlabel("iterations")
+    ax.set_xticks(ax.get_xticks()[::int(max_updates/10)])
+    plt.legend(["rnn"], loc='upper right')
+    plt.savefig(path+"loss_chart.png")
 
 
 elif option == "test":
