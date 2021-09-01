@@ -72,7 +72,7 @@ path = "trained_parameters/param=emb_size:"+str(emb_size)+"&hidden_size:"+str(
     hidden_size)+"&seq_length:"+str(seq_length)+"&batch_size:"+str(batch_size)+"&data:"+data_name+"/"
 
 # tunable parameters 
-learning_rate = 0.009
+learning_rate = 0.0075
 max_updates = 10000
 retrain = False
 
@@ -398,7 +398,7 @@ if option == "sample":
     sample_ix = sample((h_zero, c_zero), np.random.choice(
         data_stream), int(args[sample_n_index+1]), args[sample_text_index+1])
     txt = ''.join(ix_to_char[ix] for ix in sample_ix)
-    print('----\n %s \n----' % (txt,))
+    print('----\n%s\n----' % (txt,))
 
 if option == 'train':
 
@@ -427,7 +427,7 @@ if option == 'train':
         targets = cut_stream[:, p + 1:p + 1 + seq_length].T
 
         # sample from the model now and then
-        if n % 1000 == 0:
+        if n % 100 == 0:
             h_zero = np.zeros((hidden_size, 1))  # reset RNN memory
             c_zero = np.zeros((hidden_size, 1))
             sample_ix = sample((h_zero, c_zero), inputs[0][0], 500)
